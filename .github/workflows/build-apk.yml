@@ -45,11 +45,21 @@ jobs:
       - name: Rename APK
         run: cp android/app/build/outputs/apk/release/app-release.apk Daypath-v0.1.0.apk
 
-      - name: Verify APK file
+      - name: Verify APK structure
         run: |
           test -s Daypath-v0.1.0.apk
           file Daypath-v0.1.0.apk
           unzip -t Daypath-v0.1.0.apk
+
+      - name: Verify APK signature and package metadata
+        run: |
+          APKSIGNER="$(find "$ANDROID_SDK_ROOT/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          AAPT="$(find "$ANDROID_SDK_ROOT/build-tools" -type f -name aapt | sort -V | tail -n 1)"
+          test -x "$APKSIGNER"
+          test -x "$AAPT"
+          "$APKSIGNER" verify --verbose --print-certs Daypath-v0.1.0.apk | tee apk-signature.txt
+          "$AAPT" dump badging Daypath-v0.1.0.apk | tee apk-badging.txt
+          grep -q "package: name='com.daypath.app' versionCode='1' versionName='0.1.0'" apk-badging.txt
 
       - name: Create checksum
         run: sha256sum Daypath-v0.1.0.apk > Daypath-v0.1.0.apk.sha256
@@ -61,5 +71,7 @@ jobs:
           path: |
             Daypath-v0.1.0.apk
             Daypath-v0.1.0.apk.sha256
+            apk-signature.txt
+            apk-badging.txt
           if-no-files-found: error
           retention-days: 14
