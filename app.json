@@ -2,13 +2,13 @@
   "expo": {
     "name": "Daypath",
     "slug": "daypath",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "scheme": "daypath",
     "android": {
       "package": "com.daypath.app",
-      "versionCode": 2,
+      "versionCode": 3,
       "allowBackup": true
     },
     "plugins": [
