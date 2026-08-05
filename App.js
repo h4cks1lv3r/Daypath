@@ -25,21 +25,49 @@ import {
   SESSION_STEPS,
 } from './src/copy';
 import { DAWN_AMBIENCE_BASE64 } from './src/ambientData';
+import {
+  buildExam,
+  COLLECTION_KINDS,
+  createId,
+  normalizeText,
+  truncate,
+} from './src/library';
 
-const STORAGE_KEY = '@daypath/state/v2';
+const STORAGE_KEY = '@daypath/state/v3';
+const LEGACY_STORAGE_KEYS = ['@daypath/state/v2', '@daypath/state/v1'];
 const AUDIO_PATH = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}daypath-dawn-preview.ogg`
   : null;
+
+const EMPTY_LIBRARY = {
+  collections: [],
+  notes: [],
+  examHistory: [],
+};
 
 const INITIAL_STATE = {
   target: 'Speaking clearly instead of reacting automatically',
   direction: 'Speaking honestly and calmly',
   sessions: [],
+  library: EMPTY_LIBRARY,
   settings: {
     sound: true,
     volume: 0.28,
     ai: false,
   },
+};
+
+const EMPTY_COLLECTION_FORM = {
+  kind: 'Book',
+  title: '',
+  subject: '',
+  description: '',
+};
+
+const EMPTY_NOTE_FORM = {
+  title: '',
+  body: '',
+  tags: '',
 };
 
 const PALETTES = {
@@ -63,6 +91,13 @@ const PALETTES = {
     far: '#315E53',
     near: '#173B38',
     tree: '#102E2C',
+  },
+  library: {
+    sky: ['#2C6E74', '#5B9B89', '#D7C57A'],
+    sun: '#FFF0AE',
+    far: '#3B7564',
+    near: '#16483F',
+    tree: '#10392F',
   },
   progress: {
     sky: ['#37798B', '#74AAA0', '#F2C87C'],
@@ -93,13 +128,26 @@ function mergeSavedState(raw) {
         ...(saved.settings || {}),
       },
       sessions: Array.isArray(saved.sessions) ? saved.sessions : [],
+      library: {
+        ...EMPTY_LIBRARY,
+        ...(saved.library || {}),
+        collections: Array.isArray(saved.library?.collections)
+          ? saved.library.collections
+          : [],
+        notes: Array.isArray(saved.library?.notes)
+          ? saved.library.notes
+          : [],
+        examHistory: Array.isArray(saved.library?.examHistory)
+          ? saved.library.examHistory
+          : [],
+      },
     };
   } catch {
     return INITIAL_STATE;
   }
 }
 
-function PrimaryButton({ children, onPress, disabled = false }) {
+function PrimaryButton({ children, onPress, disabled = false, compact = false }) {
   return (
     <Pressable
       accessibilityRole="button"
@@ -107,6 +155,7 @@ function PrimaryButton({ children, onPress, disabled = false }) {
       onPress={onPress}
       style={({ pressed }) => [
         styles.primaryButton,
+        compact && styles.compactButton,
         disabled && styles.disabledButton,
         pressed && !disabled && styles.pressed,
       ]}
@@ -116,14 +165,21 @@ function PrimaryButton({ children, onPress, disabled = false }) {
   );
 }
 
-function SecondaryButton({ children, onPress }) {
+function SecondaryButton({ children, onPress, compact = false, danger = false }) {
   return (
     <Pressable
       accessibilityRole="button"
       onPress={onPress}
-      style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
+      style={({ pressed }) => [
+        styles.secondaryButton,
+        compact && styles.compactButton,
+        danger && styles.dangerButton,
+        pressed && styles.pressed,
+      ]}
     >
-      <Text style={styles.secondaryButtonText}>{children}</Text>
+      <Text style={[styles.secondaryButtonText, danger && styles.dangerButtonText]}>
+        {children}
+      </Text>
     </Pressable>
   );
 }
@@ -228,7 +284,13 @@ function SoundBar({ enabled, ready, error, onToggle }) {
       <View style={styles.soundBarText}>
         <Text style={styles.soundBarTitle}>Dawn ambience</Text>
         <Text style={styles.soundBarSubtitle}>
-          {error ? 'Sound could not start' : ready ? (enabled ? 'Playing softly' : 'Paused') : 'Preparing sound'}
+          {error
+            ? 'Sound could not start'
+            : ready
+              ? enabled
+                ? 'Playing softly'
+                : 'Paused'
+              : 'Preparing sound'}
         </Text>
       </View>
       <Pressable
@@ -247,6 +309,7 @@ function BottomNavigation({ screen, onChange, bottomInset }) {
   const items = [
     ['home', 'Home'],
     ['sessions', 'Sessions'],
+    ['library', 'Library'],
     ['progress', 'Progress'],
     ['settings', 'Settings'],
   ];
@@ -271,6 +334,41 @@ function BottomNavigation({ screen, onChange, bottomInset }) {
   );
 }
 
+function SearchField({ value, onChangeText, placeholder }) {
+  return (
+    <TextInput
+      accessibilityRole="search"
+      value={value}
+      onChangeText={onChangeText}
+      placeholder={placeholder}
+      placeholderTextColor="#78928D"
+      style={styles.searchInput}
+      autoCorrect={false}
+      clearButtonMode="while-editing"
+    />
+  );
+}
+
+function KindChips({ selected, onSelect, includeAll = false }) {
+  const kinds = includeAll ? ['All', ...COLLECTION_KINDS] : COLLECTION_KINDS;
+  return (
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+      {kinds.map((kind) => {
+        const active = selected === kind;
+        return (
+          <Pressable
+            key={kind}
+            onPress={() => onSelect(kind)}
+            style={[styles.chip, active && styles.chipSelected]}
+          >
+            <Text style={[styles.chipText, active && styles.chipTextSelected]}>{kind}</Text>
+          </Pressable>
+        );
+      })}
+    </ScrollView>
+  );
+}
+
 export default function App() {
   return (
     <SafeAreaProvider>
@@ -287,6 +385,7 @@ function DaypathApp() {
   const [audioReady, setAudioReady] = useState(false);
   const [audioError, setAudioError] = useState(false);
   const [screen, setScreen] = useState('home');
+
   const [mode, setMode] = useState(null);
   const [scenario, setScenario] = useState(null);
   const [step, setStep] = useState(0);
@@ -294,15 +393,39 @@ function DaypathApp() {
   const [intensityAfter, setIntensityAfter] = useState(4);
   const [answers, setAnswers] = useState(['', '', '', '', '', '']);
 
+  const [libraryQuery, setLibraryQuery] = useState('');
+  const [kindFilter, setKindFilter] = useState('All');
+  const [selectedCollectionId, setSelectedCollectionId] = useState(null);
+  const [showCollectionForm, setShowCollectionForm] = useState(false);
+  const [collectionForm, setCollectionForm] = useState(EMPTY_COLLECTION_FORM);
+  const [noteQuery, setNoteQuery] = useState('');
+  const [showNoteForm, setShowNoteForm] = useState(false);
+  const [editingNoteId, setEditingNoteId] = useState(null);
+  const [noteForm, setNoteForm] = useState(EMPTY_NOTE_FORM);
+
+  const [activeExam, setActiveExam] = useState(null);
+  const [examIndex, setExamIndex] = useState(0);
+  const [examResponses, setExamResponses] = useState({});
+  const [examReveal, setExamReveal] = useState(false);
+  const [examFinished, setExamFinished] = useState(null);
+
   useEffect(() => {
     let active = true;
-    AsyncStorage.getItem(STORAGE_KEY)
-      .then((raw) => {
-        if (active) setState(mergeSavedState(raw));
-      })
-      .finally(() => {
-        if (active) setHydrated(true);
-      });
+    (async () => {
+      let raw = await AsyncStorage.getItem(STORAGE_KEY);
+      if (!raw) {
+        for (const key of LEGACY_STORAGE_KEYS) {
+          raw = await AsyncStorage.getItem(key);
+          if (raw) break;
+        }
+      }
+      if (active) {
+        setState(mergeSavedState(raw));
+        setHydrated(true);
+      }
+    })().catch(() => {
+      if (active) setHydrated(true);
+    });
     return () => {
       active = false;
     };
@@ -360,12 +483,75 @@ function DaypathApp() {
     return Math.round(total / completed);
   }, [completed, state.sessions]);
 
+  const collectionCount = state.library.collections.length;
+  const noteCount = state.library.notes.length;
+  const examCount = state.library.examHistory.length;
+  const averageExamScore = useMemo(() => {
+    if (!examCount) return 0;
+    const percentages = state.library.examHistory.map((item) =>
+      item.total ? Math.round((item.score / item.total) * 100) : 0,
+    );
+    return Math.round(percentages.reduce((sum, value) => sum + value, 0) / percentages.length);
+  }, [examCount, state.library.examHistory]);
+
+  const selectedCollection = useMemo(
+    () => state.library.collections.find((item) => item.id === selectedCollectionId) || null,
+    [selectedCollectionId, state.library.collections],
+  );
+
+  const selectedCollectionNotes = useMemo(
+    () => state.library.notes.filter((item) => item.collectionId === selectedCollectionId),
+    [selectedCollectionId, state.library.notes],
+  );
+
+  const filteredCollections = useMemo(() => {
+    const query = normalizeText(libraryQuery);
+    return state.library.collections
+      .map((collection) => {
+        const notes = state.library.notes.filter((note) => note.collectionId === collection.id);
+        const collectionText = normalizeText(
+          `${collection.kind} ${collection.title} ${collection.subject} ${collection.description}`,
+        );
+        const matchingNotes = query
+          ? notes.filter((note) =>
+              normalizeText(`${note.title} ${note.body} ${(note.tags || []).join(' ')}`).includes(query),
+            )
+          : notes;
+        const matchesCollection = !query || collectionText.includes(query) || matchingNotes.length > 0;
+        return { collection, noteTotal: notes.length, matchingNotes: query ? matchingNotes.length : 0, matchesCollection };
+      })
+      .filter((item) => item.matchesCollection)
+      .filter((item) => kindFilter === 'All' || item.collection.kind === kindFilter)
+      .sort((a, b) => String(b.collection.updatedAt || b.collection.createdAt).localeCompare(String(a.collection.updatedAt || a.collection.createdAt)));
+  }, [kindFilter, libraryQuery, state.library.collections, state.library.notes]);
+
+  const visibleCollectionNotes = useMemo(() => {
+    const query = normalizeText(noteQuery);
+    return selectedCollectionNotes
+      .filter((note) => {
+        if (!query) return true;
+        return normalizeText(`${note.title} ${note.body} ${(note.tags || []).join(' ')}`).includes(query);
+      })
+      .sort((a, b) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt)));
+  }, [noteQuery, selectedCollectionNotes]);
+
+  const currentExamQuestion = activeExam?.questions?.[examIndex] || null;
+  const currentExamResponse = currentExamQuestion
+    ? examResponses[currentExamQuestion.id] || {}
+    : {};
   const shouldPause = intensityBefore >= 8;
 
   function updateSetting(key, value) {
     setState((current) => ({
       ...current,
       settings: { ...current.settings, [key]: value },
+    }));
+  }
+
+  function updateLibrary(updater) {
+    setState((current) => ({
+      ...current,
+      library: updater(current.library),
     }));
   }
 
@@ -384,7 +570,7 @@ function DaypathApp() {
     setStep(0);
   }
 
-  function finish() {
+  function finishSession() {
     const session = {
       id: Date.now(),
       type: mode,
@@ -405,20 +591,417 @@ function DaypathApp() {
     setScreen('home');
   }
 
-  function next() {
+  function nextSessionStep() {
     if (step === 0 && shouldPause) return;
     if (step < SESSION_STEPS.length - 1) setStep((current) => current + 1);
-    else finish();
+    else finishSession();
   }
 
-  function clearData() {
+  function openLibraryRoot() {
+    setScreen('library');
+    setSelectedCollectionId(null);
+    setShowCollectionForm(false);
+    setShowNoteForm(false);
+    setEditingNoteId(null);
+    setNoteQuery('');
+  }
+
+  function handleNavigation(nextScreen) {
+    if (nextScreen === 'library') {
+      openLibraryRoot();
+      return;
+    }
+    setScreen(nextScreen);
+  }
+
+  function saveCollection() {
+    const title = collectionForm.title.trim();
+    if (!title) {
+      Alert.alert('Give this collection a name', 'Use the book, podcast, course, project, or subject name.');
+      return;
+    }
+    const now = new Date().toISOString();
+    const collection = {
+      id: createId('collection'),
+      kind: collectionForm.kind,
+      title,
+      subject: collectionForm.subject.trim(),
+      description: collectionForm.description.trim(),
+      createdAt: now,
+      updatedAt: now,
+    };
+    updateLibrary((library) => ({
+      ...library,
+      collections: [collection, ...library.collections],
+    }));
+    setCollectionForm(EMPTY_COLLECTION_FORM);
+    setShowCollectionForm(false);
+    setSelectedCollectionId(collection.id);
+  }
+
+  function deleteCollection(collection) {
     Alert.alert(
-      'Delete your saved sessions?',
-      'This removes all locally saved sessions and cannot be undone.',
+      `Delete “${collection.title}”?`,
+      'This also deletes every note and saved exam result inside this collection.',
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Delete', style: 'destructive', onPress: () => setState(INITIAL_STATE) },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            updateLibrary((library) => ({
+              collections: library.collections.filter((item) => item.id !== collection.id),
+              notes: library.notes.filter((item) => item.collectionId !== collection.id),
+              examHistory: library.examHistory.filter((item) => item.collectionId !== collection.id),
+            }));
+            setSelectedCollectionId(null);
+            setShowNoteForm(false);
+          },
+        },
       ],
+    );
+  }
+
+  function beginNewNote() {
+    setEditingNoteId(null);
+    setNoteForm(EMPTY_NOTE_FORM);
+    setShowNoteForm(true);
+  }
+
+  function beginEditNote(note) {
+    setEditingNoteId(note.id);
+    setNoteForm({
+      title: note.title,
+      body: note.body,
+      tags: (note.tags || []).join(', '),
+    });
+    setShowNoteForm(true);
+  }
+
+  function saveNote() {
+    if (!selectedCollection) return;
+    const title = noteForm.title.trim();
+    const body = noteForm.body.trim();
+    if (!title || !body) {
+      Alert.alert('Add a title and note', 'Both fields are needed so the note can be found and used in an exam.');
+      return;
+    }
+    const tags = noteForm.tags
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+    const now = new Date().toISOString();
+    updateLibrary((library) => {
+      const notes = editingNoteId
+        ? library.notes.map((note) =>
+            note.id === editingNoteId
+              ? { ...note, title, body, tags, updatedAt: now }
+              : note,
+          )
+        : [
+            {
+              id: createId('note'),
+              collectionId: selectedCollection.id,
+              title,
+              body,
+              tags,
+              createdAt: now,
+              updatedAt: now,
+            },
+            ...library.notes,
+          ];
+      return {
+        ...library,
+        notes,
+        collections: library.collections.map((collection) =>
+          collection.id === selectedCollection.id
+            ? { ...collection, updatedAt: now }
+            : collection,
+        ),
+      };
+    });
+    setNoteForm(EMPTY_NOTE_FORM);
+    setEditingNoteId(null);
+    setShowNoteForm(false);
+  }
+
+  function deleteNote(noteId) {
+    Alert.alert('Delete this note?', 'This note will no longer appear in future exams.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => {
+          updateLibrary((library) => ({
+            ...library,
+            notes: library.notes.filter((note) => note.id !== noteId),
+          }));
+          setShowNoteForm(false);
+          setEditingNoteId(null);
+        },
+      },
+    ]);
+  }
+
+  function startExam(collection) {
+    const notes = state.library.notes.filter((note) => note.collectionId === collection.id);
+    if (!notes.length) {
+      Alert.alert('Add notes first', 'The exam uses every saved note in this collection.');
+      return;
+    }
+    const exam = buildExam(collection, notes);
+    setActiveExam(exam);
+    setExamIndex(0);
+    setExamResponses({});
+    setExamReveal(false);
+    setExamFinished(null);
+  }
+
+  function setCurrentExamAnswer(response) {
+    if (!currentExamQuestion) return;
+    setExamResponses((current) => ({
+      ...current,
+      [currentExamQuestion.id]: {
+        ...(current[currentExamQuestion.id] || {}),
+        response,
+      },
+    }));
+  }
+
+  function checkChoiceAnswer() {
+    if (!currentExamQuestion || !currentExamResponse.response) return;
+    const correct = currentExamResponse.response === currentExamQuestion.answer;
+    setExamResponses((current) => ({
+      ...current,
+      [currentExamQuestion.id]: {
+        ...(current[currentExamQuestion.id] || {}),
+        correct,
+      },
+    }));
+    setExamReveal(true);
+  }
+
+  function revealWrittenAnswer() {
+    if (!currentExamQuestion) return;
+    setExamReveal(true);
+  }
+
+  function gradeWrittenAnswer(correct) {
+    if (!currentExamQuestion) return;
+    setExamResponses((current) => ({
+      ...current,
+      [currentExamQuestion.id]: {
+        ...(current[currentExamQuestion.id] || {}),
+        correct,
+      },
+    }));
+  }
+
+  function finishExam() {
+    if (!activeExam) return;
+    const score = activeExam.questions.filter((question) => examResponses[question.id]?.correct).length;
+    const reviewNoteIds = activeExam.questions
+      .filter((question) => !examResponses[question.id]?.correct)
+      .map((question) => question.noteId);
+    const result = {
+      id: createId('attempt'),
+      examId: activeExam.id,
+      collectionId: activeExam.collectionId,
+      title: activeExam.title,
+      score,
+      total: activeExam.questions.length,
+      reviewNoteIds,
+      createdAt: new Date().toISOString(),
+    };
+    updateLibrary((library) => ({
+      ...library,
+      examHistory: [result, ...library.examHistory],
+    }));
+    setExamFinished(result);
+  }
+
+  function nextExamQuestion() {
+    if (!activeExam) return;
+    if (examIndex >= activeExam.questions.length - 1) {
+      finishExam();
+      return;
+    }
+    setExamIndex((current) => current + 1);
+    setExamReveal(false);
+  }
+
+  function closeExam() {
+    setActiveExam(null);
+    setExamFinished(null);
+    setExamIndex(0);
+    setExamResponses({});
+    setExamReveal(false);
+    setScreen('library');
+  }
+
+  function clearSessionData() {
+    Alert.alert('Delete your saved sessions?', 'Your library notes and exam results will stay on this device.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => setState((current) => ({ ...current, sessions: [] })),
+      },
+    ]);
+  }
+
+  function clearLibraryData() {
+    Alert.alert('Delete your entire library?', 'All collections, notes, and exam results will be removed.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => {
+          setState((current) => ({ ...current, library: EMPTY_LIBRARY }));
+          setSelectedCollectionId(null);
+        },
+      },
+    ]);
+  }
+
+  if (activeExam) {
+    if (examFinished) {
+      const percentage = examFinished.total
+        ? Math.round((examFinished.score / examFinished.total) * 100)
+        : 0;
+      const reviewNotes = state.library.notes.filter((note) =>
+        examFinished.reviewNoteIds.includes(note.id),
+      );
+      return (
+        <LinearGradient colors={['#123A39', '#07191A']} style={styles.app}>
+          <StatusBar style="light" />
+          <ScrollView
+            contentContainerStyle={[
+              styles.examScreen,
+              { paddingTop: insets.top + 18, paddingBottom: insets.bottom + 24 },
+            ]}
+          >
+            <NatureScene variant="library" compact>
+              <Text style={styles.sessionEyebrow}>EXAM COMPLETE</Text>
+              <Text style={styles.sessionHeroTitle}>{activeExam.title}</Text>
+              <Text style={styles.sessionHeroCopy}>
+                You marked {examFinished.score} of {examFinished.total} answers as correct.
+              </Text>
+            </NatureScene>
+            <Card style={styles.scoreCard}>
+              <Text style={styles.scoreValue}>{percentage}%</Text>
+              <Text style={styles.cardTitle}>Your review score</Text>
+              <Text style={styles.cardBody}>
+                This is a study aid based only on the notes you saved. It is not an outside assessment of the source material.
+              </Text>
+            </Card>
+            {reviewNotes.length > 0 && (
+              <Card>
+                <Text style={styles.cardEyebrow}>REVIEW THESE NOTES</Text>
+                {reviewNotes.map((note) => (
+                  <Text key={note.id} style={styles.reviewItem}>• {note.title}</Text>
+                ))}
+              </Card>
+            )}
+            <PrimaryButton onPress={closeExam}>Return to this collection</PrimaryButton>
+          </ScrollView>
+        </LinearGradient>
+      );
+    }
+
+    const questionAnswered = typeof currentExamResponse.correct === 'boolean';
+    return (
+      <LinearGradient colors={['#0A2B2C', '#061617']} style={styles.app}>
+        <StatusBar style="light" />
+        <View style={[styles.examLayout, { paddingTop: insets.top + 10, paddingBottom: Math.max(insets.bottom, 14) }]}>
+          <View style={styles.sessionTopRow}>
+            <Pressable onPress={closeExam} style={styles.closeButton} accessibilityRole="button">
+              <Text style={styles.closeButtonText}>Close</Text>
+            </Pressable>
+            <Text style={styles.stepCount}>{examIndex + 1} of {activeExam.questions.length}</Text>
+          </View>
+          <View style={styles.progressTrack}>
+            <View style={[styles.progressFill, { width: `${((examIndex + 1) / activeExam.questions.length) * 100}%` }]} />
+          </View>
+          <ScrollView contentContainerStyle={styles.examContent} keyboardShouldPersistTaps="handled">
+            <Text style={styles.examContext}>{activeExam.context}</Text>
+            <Text style={styles.examQuestion}>{currentExamQuestion.prompt}</Text>
+            <Text style={styles.helperText}>{currentExamQuestion.helper}</Text>
+
+            {currentExamQuestion.type === 'choice' ? (
+              <View style={styles.choiceList}>
+                {currentExamQuestion.options.map((option) => {
+                  const selected = currentExamResponse.response === option;
+                  const correct = examReveal && option === currentExamQuestion.answer;
+                  const wrong = examReveal && selected && option !== currentExamQuestion.answer;
+                  return (
+                    <Pressable
+                      key={option}
+                      disabled={examReveal}
+                      onPress={() => setCurrentExamAnswer(option)}
+                      style={[
+                        styles.choice,
+                        selected && styles.choiceSelected,
+                        correct && styles.choiceCorrect,
+                        wrong && styles.choiceWrong,
+                      ]}
+                    >
+                      <Text style={styles.choiceText}>{option}</Text>
+                    </Pressable>
+                  );
+                })}
+                {!examReveal ? (
+                  <PrimaryButton disabled={!currentExamResponse.response} onPress={checkChoiceAnswer}>
+                    Check answer
+                  </PrimaryButton>
+                ) : (
+                  <Card style={currentExamResponse.correct ? styles.correctCard : styles.reviewCard}>
+                    <Text style={styles.cardTitle}>
+                      {currentExamResponse.correct ? 'Correct' : 'Review this note again'}
+                    </Text>
+                    <Text style={styles.cardBody}>{currentExamQuestion.reference}</Text>
+                  </Card>
+                )}
+              </View>
+            ) : (
+              <>
+                <TextInput
+                  multiline
+                  value={currentExamResponse.response || ''}
+                  onChangeText={setCurrentExamAnswer}
+                  editable={!examReveal}
+                  placeholder="Write your answer from memory…"
+                  placeholderTextColor="#78928D"
+                  style={styles.examInput}
+                  textAlignVertical="top"
+                />
+                {!examReveal ? (
+                  <PrimaryButton onPress={revealWrittenAnswer}>Show my reference note</PrimaryButton>
+                ) : (
+                  <>
+                    <Card>
+                      <Text style={styles.cardEyebrow}>YOUR SAVED NOTE</Text>
+                      <Text style={styles.cardBody}>{currentExamQuestion.reference}</Text>
+                    </Card>
+                    <Text style={styles.selfGradeTitle}>How close was your answer?</Text>
+                    <View style={styles.gradeRow}>
+                      <SecondaryButton compact onPress={() => gradeWrittenAnswer(false)}>Review again</SecondaryButton>
+                      <PrimaryButton compact onPress={() => gradeWrittenAnswer(true)}>I got it</PrimaryButton>
+                    </View>
+                  </>
+                )}
+              </>
+            )}
+          </ScrollView>
+          {questionAnswered && (
+            <View style={styles.examFooter}>
+              <PrimaryButton onPress={nextExamQuestion}>
+                {examIndex === activeExam.questions.length - 1 ? 'Finish exam' : 'Next question'}
+              </PrimaryButton>
+            </View>
+          )}
+        </View>
+      </LinearGradient>
     );
   }
 
@@ -462,10 +1045,7 @@ function DaypathApp() {
               <View style={styles.progressTrack}>
                 <View style={[styles.progressFill, { width: `${((step + 1) / SESSION_STEPS.length) * 100}%` }]} />
               </View>
-              <ScrollView
-                keyboardShouldPersistTaps="handled"
-                contentContainerStyle={styles.sessionContent}
-              >
+              <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.sessionContent}>
                 <NatureScene variant={step < 2 ? 'support' : step < 4 ? 'sessions' : 'progress'} compact>
                   <Text style={styles.sessionEyebrow}>{mode === 'scenario' ? scenario : 'TODAY’S SESSION'}</Text>
                   <Text style={styles.sessionHeroTitle}>{SESSION_STEPS[step].title}</Text>
@@ -509,7 +1089,7 @@ function DaypathApp() {
               </ScrollView>
               <View style={styles.sessionFooter}>
                 {step > 0 && <SecondaryButton onPress={() => setStep((current) => current - 1)}>Back</SecondaryButton>}
-                <PrimaryButton onPress={next}>
+                <PrimaryButton onPress={nextSessionStep}>
                   {step === SESSION_STEPS.length - 1 ? 'Save and finish' : 'Continue'}
                 </PrimaryButton>
               </View>
@@ -549,6 +1129,22 @@ function DaypathApp() {
                   <Text style={styles.supportBody}>A calm, step-by-step guide for a difficult moment or life event.</Text>
                 </View>
                 <Text style={styles.supportArrow}>→</Text>
+              </Pressable>
+
+              <Pressable
+                accessibilityRole="button"
+                onPress={openLibraryRoot}
+                style={({ pressed }) => [styles.libraryHomeCard, pressed && styles.pressed]}
+              >
+                <View style={styles.libraryHomeIcon}><Text style={styles.libraryHomeIconText}>≡</Text></View>
+                <View style={styles.supportTextWrap}>
+                  <Text style={styles.libraryHomeEyebrow}>YOUR STUDY LIBRARY</Text>
+                  <Text style={styles.libraryHomeTitle}>Organize notes by source or subject</Text>
+                  <Text style={styles.libraryHomeBody}>
+                    {collectionCount} collections · {noteCount} notes · create exams from any collection
+                  </Text>
+                </View>
+                <Text style={styles.listArrow}>→</Text>
               </Pressable>
 
               <Text style={styles.sectionTitle}>Today</Text>
@@ -609,9 +1205,228 @@ function DaypathApp() {
             </>
           )}
 
+          {screen === 'library' && !selectedCollection && (
+            <>
+              <PageHeader screen="library" />
+              <SearchField
+                value={libraryQuery}
+                onChangeText={setLibraryQuery}
+                placeholder="Search books, podcasts, subjects, tags, or note text"
+              />
+              <PrimaryButton onPress={() => setShowCollectionForm((current) => !current)}>
+                {showCollectionForm ? 'Close new collection form' : 'Create a collection'}
+              </PrimaryButton>
+
+              {showCollectionForm && (
+                <Card>
+                  <Text style={styles.cardTitle}>New collection</Text>
+                  <Text style={styles.cardBody}>
+                    A collection can be a specific book or podcast, a course, a project, or any subject you want.
+                  </Text>
+                  <Text style={styles.fieldLabel}>TYPE</Text>
+                  <KindChips selected={collectionForm.kind} onSelect={(kind) => setCollectionForm((current) => ({ ...current, kind }))} />
+                  <Text style={styles.fieldLabel}>NAME</Text>
+                  <TextInput
+                    value={collectionForm.title}
+                    onChangeText={(title) => setCollectionForm((current) => ({ ...current, title }))}
+                    placeholder="For example: Deep Work or Network Security"
+                    placeholderTextColor="#78928D"
+                    style={styles.singleLineInput}
+                  />
+                  <Text style={styles.fieldLabel}>SUBJECT OR CATEGORY (OPTIONAL)</Text>
+                  <TextInput
+                    value={collectionForm.subject}
+                    onChangeText={(subject) => setCollectionForm((current) => ({ ...current, subject }))}
+                    placeholder="For example: Productivity or Cybersecurity"
+                    placeholderTextColor="#78928D"
+                    style={styles.singleLineInput}
+                  />
+                  <Text style={styles.fieldLabel}>DESCRIPTION (OPTIONAL)</Text>
+                  <TextInput
+                    multiline
+                    value={collectionForm.description}
+                    onChangeText={(description) => setCollectionForm((current) => ({ ...current, description }))}
+                    placeholder="What are you collecting here?"
+                    placeholderTextColor="#78928D"
+                    style={styles.smallTextArea}
+                    textAlignVertical="top"
+                  />
+                  <PrimaryButton onPress={saveCollection}>Save collection</PrimaryButton>
+                </Card>
+              )}
+
+              <KindChips selected={kindFilter} onSelect={setKindFilter} includeAll />
+              <View style={styles.librarySummaryRow}>
+                <Text style={styles.sectionTitle}>Collections</Text>
+                <Text style={styles.summaryText}>{filteredCollections.length} shown</Text>
+              </View>
+
+              {!filteredCollections.length && (
+                <Card>
+                  <Text style={styles.cardTitle}>{collectionCount ? 'No collections match this search' : 'Your library is empty'}</Text>
+                  <Text style={styles.cardBody}>
+                    {collectionCount
+                      ? 'Try another word or choose All.'
+                      : 'Create a collection first. Your notes will stay inside it instead of appearing as one large list.'}
+                  </Text>
+                </Card>
+              )}
+
+              {filteredCollections.map(({ collection, noteTotal, matchingNotes }) => (
+                <Pressable
+                  key={collection.id}
+                  onPress={() => {
+                    setSelectedCollectionId(collection.id);
+                    setNoteQuery('');
+                    setShowNoteForm(false);
+                  }}
+                  style={({ pressed }) => [styles.collectionCard, pressed && styles.pressed]}
+                >
+                  <View style={styles.collectionTopRow}>
+                    <View style={styles.kindBadge}><Text style={styles.kindBadgeText}>{collection.kind}</Text></View>
+                    <Text style={styles.collectionCount}>{noteTotal} {noteTotal === 1 ? 'note' : 'notes'}</Text>
+                  </View>
+                  <Text style={styles.collectionTitle}>{collection.title}</Text>
+                  {!!collection.subject && <Text style={styles.collectionSubject}>{collection.subject}</Text>}
+                  {!!collection.description && <Text style={styles.cardBody}>{truncate(collection.description, 120)}</Text>}
+                  {!!libraryQuery && matchingNotes > 0 && (
+                    <Text style={styles.searchMatch}>{matchingNotes} matching {matchingNotes === 1 ? 'note' : 'notes'}</Text>
+                  )}
+                </Pressable>
+              ))}
+            </>
+          )}
+
+          {screen === 'library' && selectedCollection && (
+            <>
+              <SecondaryButton compact onPress={() => {
+                setSelectedCollectionId(null);
+                setShowNoteForm(false);
+                setEditingNoteId(null);
+              }}>
+                Back to collections
+              </SecondaryButton>
+              <NatureScene variant="library" compact>
+                <Text style={styles.sessionEyebrow}>{selectedCollection.kind.toUpperCase()}</Text>
+                <Text style={styles.sessionHeroTitle}>{selectedCollection.title}</Text>
+                {!!selectedCollection.subject && <Text style={styles.sessionHeroCopy}>{selectedCollection.subject}</Text>}
+                {!!selectedCollection.description && <Text style={styles.sessionHeroCopy}>{selectedCollection.description}</Text>}
+              </NatureScene>
+
+              <View style={styles.collectionActionRow}>
+                <PrimaryButton compact onPress={beginNewNote}>Add note</PrimaryButton>
+                <PrimaryButton compact disabled={!selectedCollectionNotes.length} onPress={() => startExam(selectedCollection)}>
+                  Create full exam
+                </PrimaryButton>
+              </View>
+              <Text style={styles.noteCoverageText}>
+                A full exam creates one question from every note currently saved in this collection.
+              </Text>
+
+              {showNoteForm && (
+                <Card>
+                  <Text style={styles.cardTitle}>{editingNoteId ? 'Edit note' : 'New note'}</Text>
+                  <Text style={styles.fieldLabel}>NOTE TITLE</Text>
+                  <TextInput
+                    value={noteForm.title}
+                    onChangeText={(title) => setNoteForm((current) => ({ ...current, title }))}
+                    placeholder="Name the idea so you can find it later"
+                    placeholderTextColor="#78928D"
+                    style={styles.singleLineInput}
+                  />
+                  <Text style={styles.fieldLabel}>YOUR NOTES</Text>
+                  <TextInput
+                    multiline
+                    value={noteForm.body}
+                    onChangeText={(body) => setNoteForm((current) => ({ ...current, body }))}
+                    placeholder="Write what you learned in your own words. This text becomes the reference answer in exams."
+                    placeholderTextColor="#78928D"
+                    style={styles.noteTextArea}
+                    textAlignVertical="top"
+                  />
+                  <Text style={styles.fieldLabel}>TAGS (OPTIONAL, COMMA SEPARATED)</Text>
+                  <TextInput
+                    value={noteForm.tags}
+                    onChangeText={(tags) => setNoteForm((current) => ({ ...current, tags }))}
+                    placeholder="chapter 2, habits, key idea"
+                    placeholderTextColor="#78928D"
+                    style={styles.singleLineInput}
+                  />
+                  <PrimaryButton onPress={saveNote}>{editingNoteId ? 'Save changes' : 'Save note'}</PrimaryButton>
+                  <SecondaryButton onPress={() => {
+                    setShowNoteForm(false);
+                    setEditingNoteId(null);
+                    setNoteForm(EMPTY_NOTE_FORM);
+                  }}>
+                    Cancel
+                  </SecondaryButton>
+                  {editingNoteId && (
+                    <SecondaryButton danger onPress={() => deleteNote(editingNoteId)}>Delete note</SecondaryButton>
+                  )}
+                </Card>
+              )}
+
+              <SearchField
+                value={noteQuery}
+                onChangeText={setNoteQuery}
+                placeholder={`Search inside ${selectedCollection.title}`}
+              />
+              <View style={styles.librarySummaryRow}>
+                <Text style={styles.sectionTitle}>Notes</Text>
+                <Text style={styles.summaryText}>{visibleCollectionNotes.length} shown</Text>
+              </View>
+
+              {!visibleCollectionNotes.length && (
+                <Card>
+                  <Text style={styles.cardTitle}>{selectedCollectionNotes.length ? 'No notes match this search' : 'No notes in this collection yet'}</Text>
+                  <Text style={styles.cardBody}>
+                    {selectedCollectionNotes.length
+                      ? 'Try a different word or clear the search.'
+                      : 'Add your first note. Notes remain grouped here and are used to build this collection’s exam.'}
+                  </Text>
+                </Card>
+              )}
+
+              {visibleCollectionNotes.map((note) => (
+                <Pressable
+                  key={note.id}
+                  onPress={() => beginEditNote(note)}
+                  style={({ pressed }) => [styles.noteCard, pressed && styles.pressed]}
+                >
+                  <Text style={styles.cardTitle}>{note.title}</Text>
+                  <Text style={styles.cardBody}>{truncate(note.body, 180)}</Text>
+                  {!!note.tags?.length && (
+                    <View style={styles.tagRow}>
+                      {note.tags.map((tag) => <Text key={tag} style={styles.tag}>#{tag}</Text>)}
+                    </View>
+                  )}
+                  <Text style={styles.meta}>Updated {new Date(note.updatedAt || note.createdAt).toLocaleDateString()}</Text>
+                </Pressable>
+              ))}
+
+              {state.library.examHistory.some((item) => item.collectionId === selectedCollection.id) && (
+                <>
+                  <Text style={styles.sectionTitle}>Recent exams</Text>
+                  {state.library.examHistory
+                    .filter((item) => item.collectionId === selectedCollection.id)
+                    .slice(0, 3)
+                    .map((item) => (
+                      <Card key={item.id}>
+                        <Text style={styles.cardTitle}>{item.score} of {item.total} correct</Text>
+                        <Text style={styles.cardBody}>{new Date(item.createdAt).toLocaleString()}</Text>
+                      </Card>
+                    ))}
+                </>
+              )}
+
+              <SecondaryButton danger onPress={() => deleteCollection(selectedCollection)}>Delete collection</SecondaryButton>
+            </>
+          )}
+
           {screen === 'progress' && (
             <>
               <PageHeader screen="progress" />
+              <Text style={styles.sectionTitle}>Reflection practice</Text>
               <View style={styles.metricRow}>
                 <Card style={styles.metricCard}>
                   <Text style={styles.metricValue}>{completed}</Text>
@@ -639,6 +1454,22 @@ function DaypathApp() {
                   Daypath looks at what you practice and follow through on. It cannot measure brain changes or promise that change happens on a fixed schedule.
                 </Text>
               </Card>
+
+              <Text style={styles.sectionTitle}>Study library</Text>
+              <View style={styles.metricRow}>
+                <Card style={styles.metricCard}>
+                  <Text style={styles.metricValue}>{collectionCount}</Text>
+                  <Text style={styles.metricLabel}>Collections</Text>
+                </Card>
+                <Card style={styles.metricCard}>
+                  <Text style={styles.metricValue}>{noteCount}</Text>
+                  <Text style={styles.metricLabel}>Notes</Text>
+                </Card>
+                <Card style={styles.metricCard}>
+                  <Text style={styles.metricValue}>{averageExamScore}%</Text>
+                  <Text style={styles.metricLabel}>Average exam score</Text>
+                </Card>
+              </View>
             </>
           )}
 
@@ -686,19 +1517,26 @@ function DaypathApp() {
                 <View style={styles.settingRow}>
                   <View style={styles.settingCopy}>
                     <Text style={styles.cardTitle}>AI guidance</Text>
-                    <Text style={styles.cardBody}>Not connected in this build. Your session writing stays on this device.</Text>
+                    <Text style={styles.cardBody}>Not connected in this build. Your sessions and library notes stay on this device.</Text>
                   </View>
                   <Switch value={false} disabled />
                 </View>
               </Card>
 
               <Card>
-                <Text style={styles.cardEyebrow}>WHAT DAYPATH IS</Text>
+                <Text style={styles.cardEyebrow}>YOUR LIBRARY</Text>
                 <Text style={styles.cardBody}>
-                  Daypath is a guided self-reflection and behavior-change tool. It is not therapy, diagnosis, medical treatment, or emergency support.
+                  Collections, notes, search, exams, and scores are stored locally on this device in this test build.
                 </Text>
               </Card>
-              <SecondaryButton onPress={clearData}>Delete saved sessions</SecondaryButton>
+              <Card>
+                <Text style={styles.cardEyebrow}>WHAT DAYPATH IS</Text>
+                <Text style={styles.cardBody}>
+                  Daypath is a guided self-reflection, study, and behavior-change tool. It is not therapy, diagnosis, medical treatment, or emergency support.
+                </Text>
+              </Card>
+              <SecondaryButton onPress={clearSessionData}>Delete saved sessions</SecondaryButton>
+              <SecondaryButton danger onPress={clearLibraryData}>Delete library and exam history</SecondaryButton>
             </>
           )}
         </ScrollView>
@@ -709,7 +1547,11 @@ function DaypathApp() {
           error={audioError}
           onToggle={() => updateSetting('sound', !state.settings.sound)}
         />
-        <BottomNavigation screen={screen === 'support' ? 'home' : screen} onChange={setScreen} bottomInset={insets.bottom} />
+        <BottomNavigation
+          screen={screen === 'support' ? 'home' : screen}
+          onChange={handleNavigation}
+          bottomInset={insets.bottom}
+        />
       </View>
     </LinearGradient>
   );
@@ -780,8 +1622,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: 12,
+    flexShrink: 1,
   },
-  primaryButtonText: { color: '#102A28', fontSize: 17, fontWeight: '800' },
+  compactButton: { minHeight: 46, paddingVertical: 11, flex: 1 },
+  primaryButtonText: { color: '#102A28', fontSize: 16, fontWeight: '800', textAlign: 'center' },
   secondaryButton: {
     minHeight: 50,
     borderWidth: 1,
@@ -793,7 +1637,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginTop: 10,
   },
-  secondaryButtonText: { color: '#EAF4F0', fontSize: 16, fontWeight: '700' },
+  secondaryButtonText: { color: '#EAF4F0', fontSize: 16, fontWeight: '700', textAlign: 'center' },
+  dangerButton: { borderColor: '#9B5B58' },
+  dangerButtonText: { color: '#F4B6B1' },
   disabledButton: { opacity: 0.5 },
   pressed: { opacity: 0.78 },
   card: {
@@ -823,6 +1669,21 @@ const styles = StyleSheet.create({
   supportTitle: { color: '#173B38', fontSize: 25, lineHeight: 30, fontWeight: '800' },
   supportBody: { color: '#355B56', fontSize: 15, lineHeight: 23, marginTop: 8 },
   supportArrow: { color: '#173B38', fontSize: 34, marginLeft: 12, fontWeight: '700' },
+  libraryHomeCard: {
+    minHeight: 145,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#103332',
+    borderRadius: 26,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: '#2E5A55',
+  },
+  libraryHomeIcon: { width: 46, height: 46, borderRadius: 23, backgroundColor: '#F0C073', alignItems: 'center', justifyContent: 'center', marginRight: 14 },
+  libraryHomeIconText: { color: '#173B38', fontSize: 24, fontWeight: '800' },
+  libraryHomeEyebrow: { color: '#F2BC6D', fontSize: 11, letterSpacing: 1.5, fontWeight: '800', marginBottom: 6 },
+  libraryHomeTitle: { color: '#FFF9ED', fontSize: 21, lineHeight: 27, fontWeight: '800' },
+  libraryHomeBody: { color: '#BFD5D0', fontSize: 14, lineHeight: 21, marginTop: 7 },
   listCard: {
     minHeight: 108,
     flexDirection: 'row',
@@ -839,7 +1700,7 @@ const styles = StyleSheet.create({
   detailLabel: { color: '#F2BC6D', fontSize: 11, fontWeight: '800', letterSpacing: 1.5, marginTop: 17 },
   metricRow: { flexDirection: 'row', gap: 8 },
   metricCard: { flex: 1, minHeight: 132, justifyContent: 'space-between' },
-  metricValue: { color: '#F5C67D', fontSize: 34, fontWeight: '800' },
+  metricValue: { color: '#F5C67D', fontSize: 32, fontWeight: '800' },
   metricLabel: { color: '#C9DCD7', fontSize: 12, lineHeight: 17, marginTop: 10 },
   settingRow: { flexDirection: 'row', alignItems: 'center', gap: 14 },
   settingCopy: { flex: 1 },
@@ -878,60 +1739,86 @@ const styles = StyleSheet.create({
     backgroundColor: '#061819',
     borderTopWidth: 1,
     borderTopColor: '#173735',
-    paddingTop: 8,
-    paddingHorizontal: 8,
+    paddingTop: 7,
+    paddingHorizontal: 4,
   },
-  navItem: { flex: 1, minHeight: 54, alignItems: 'center', justifyContent: 'center' },
-  navMarker: { width: 22, height: 3, borderRadius: 2, backgroundColor: 'transparent', marginBottom: 7 },
-  navMarkerSelected: { backgroundColor: '#F1B961' },
-  navText: { color: '#718783', fontSize: 13, fontWeight: '700' },
-  navTextSelected: { color: '#F6E4BD' },
-  sessionScreen: { flex: 1 },
-  sessionTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 18 },
-  closeButton: { minWidth: 58, minHeight: 42, justifyContent: 'center' },
-  closeButtonText: { color: '#D6E5E1', fontSize: 15, fontWeight: '700' },
-  stepCount: { color: '#8FA9A3', fontSize: 13, fontWeight: '700' },
-  progressTrack: { height: 4, borderRadius: 2, backgroundColor: '#173735', marginHorizontal: 18, marginTop: 5 },
-  progressFill: { height: 4, borderRadius: 2, backgroundColor: '#F1B961' },
-  sessionContent: { padding: 18, gap: 14 },
-  sessionEyebrow: { color: '#FFE0A0', fontSize: 11, fontWeight: '800', letterSpacing: 1.5, marginBottom: 8 },
-  sessionHeroTitle: { color: '#FFF9ED', fontSize: 30, lineHeight: 36, fontWeight: '800' },
-  sessionHeroCopy: { color: '#E0ECE8', fontSize: 16, lineHeight: 24, marginTop: 10 },
-  helperText: { color: '#C5D8D3', fontSize: 15, lineHeight: 22 },
+  navItem: { flex: 1, minHeight: 54, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 2 },
+  navMarker: { width: 24, height: 3, borderRadius: 2, backgroundColor: 'transparent', marginBottom: 5 },
+  navMarkerSelected: { backgroundColor: '#F0B85F' },
+  navText: { color: '#7F9C97', fontSize: 11, fontWeight: '700' },
+  navTextSelected: { color: '#F7D89B' },
+  sessionScreen: { flex: 1, paddingHorizontal: 18 },
+  sessionTopRow: { minHeight: 46, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  closeButton: { minHeight: 42, minWidth: 64, alignItems: 'center', justifyContent: 'center', borderRadius: 14, backgroundColor: '#143634' },
+  closeButtonText: { color: '#E7F1EE', fontWeight: '700' },
+  stepCount: { color: '#8BA7A1', fontWeight: '700' },
+  progressTrack: { height: 5, borderRadius: 3, backgroundColor: '#173B39', overflow: 'hidden', marginBottom: 10 },
+  progressFill: { height: 5, borderRadius: 3, backgroundColor: '#F2B860' },
+  sessionContent: { paddingBottom: 24, gap: 14 },
+  sessionEyebrow: { color: '#FFE0A1', fontSize: 11, letterSpacing: 1.8, fontWeight: '800', marginBottom: 9 },
+  sessionHeroTitle: { color: '#FFF9ED', fontSize: 29, lineHeight: 35, fontWeight: '800' },
+  sessionHeroCopy: { color: '#E0EDE9', fontSize: 16, lineHeight: 24, marginTop: 9 },
+  helperText: { color: '#AFC7C1', fontSize: 15, lineHeight: 22, marginVertical: 4 },
+  sessionFooter: { paddingTop: 8, borderTopWidth: 1, borderTopColor: '#173735' },
   feelingList: { gap: 9 },
-  feelingOption: {
-    minHeight: 68,
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: '#2B4A46',
-    backgroundColor: '#0D2726',
-    padding: 12,
-  },
-  feelingOptionCompact: { minHeight: 52 },
-  feelingOptionSelected: { borderColor: '#F1BB66', backgroundColor: '#173532' },
-  feelingNumber: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center', backgroundColor: '#173A37', marginRight: 12 },
-  feelingNumberSelected: { backgroundColor: '#F1BB66' },
-  feelingNumberText: { color: '#D6E4E0', fontWeight: '800' },
-  feelingNumberTextSelected: { color: '#17312F' },
+  feelingOption: { minHeight: 72, flexDirection: 'row', alignItems: 'center', borderRadius: 19, backgroundColor: '#0E2A29', borderWidth: 1, borderColor: '#244A45', padding: 12 },
+  feelingOptionCompact: { minHeight: 56 },
+  feelingOptionSelected: { backgroundColor: '#E8CF9A', borderColor: '#F3DEA8' },
+  feelingNumber: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#173E3B', alignItems: 'center', justifyContent: 'center', marginRight: 12 },
+  feelingNumberSelected: { backgroundColor: '#173B38' },
+  feelingNumberText: { color: '#F6D28E', fontWeight: '800' },
+  feelingNumberTextSelected: { color: '#FFF3D4' },
   feelingTextWrap: { flex: 1 },
-  feelingShort: { color: '#EAF2EF', fontSize: 15, fontWeight: '700' },
-  feelingShortSelected: { color: '#FFF8E9' },
-  feelingDescription: { color: '#9FB8B2', fontSize: 13, lineHeight: 18, marginTop: 3 },
-  feelingDescriptionSelected: { color: '#D6E5E1' },
-  gentleNotice: { borderColor: '#8B7045', backgroundColor: '#2F352A' },
-  input: {
-    minHeight: 230,
-    borderRadius: 22,
-    borderWidth: 1,
-    borderColor: '#31534E',
-    backgroundColor: '#0B2423',
-    color: '#FFF9ED',
-    fontSize: 17,
-    lineHeight: 25,
-    padding: 18,
-  },
-  afterCheck: { marginTop: 12, gap: 10 },
-  sessionFooter: { paddingHorizontal: 18, paddingTop: 4 },
+  feelingShort: { color: '#F4F8F5', fontSize: 16, fontWeight: '700' },
+  feelingShortSelected: { color: '#173B38' },
+  feelingDescription: { color: '#AFC7C1', fontSize: 13, lineHeight: 18, marginTop: 3 },
+  feelingDescriptionSelected: { color: '#355B56' },
+  gentleNotice: { borderColor: '#9B8251', backgroundColor: '#332D20' },
+  input: { minHeight: 190, borderRadius: 20, borderWidth: 1, borderColor: '#31544F', backgroundColor: '#0B2524', color: '#F5F8F5', padding: 16, fontSize: 16, lineHeight: 24 },
+  afterCheck: { marginTop: 16, gap: 11 },
+  searchInput: { minHeight: 52, borderRadius: 18, borderWidth: 1, borderColor: '#31544F', backgroundColor: '#0B2524', color: '#F5F8F5', paddingHorizontal: 16, fontSize: 15 },
+  singleLineInput: { minHeight: 50, borderRadius: 16, borderWidth: 1, borderColor: '#31544F', backgroundColor: '#0B2524', color: '#F5F8F5', paddingHorizontal: 14, fontSize: 15, marginTop: 7 },
+  smallTextArea: { minHeight: 100, borderRadius: 16, borderWidth: 1, borderColor: '#31544F', backgroundColor: '#0B2524', color: '#F5F8F5', padding: 14, fontSize: 15, lineHeight: 22, marginTop: 7 },
+  noteTextArea: { minHeight: 210, borderRadius: 16, borderWidth: 1, borderColor: '#31544F', backgroundColor: '#0B2524', color: '#F5F8F5', padding: 14, fontSize: 15, lineHeight: 23, marginTop: 7 },
+  fieldLabel: { color: '#F2BC6D', fontSize: 11, letterSpacing: 1.3, fontWeight: '800', marginTop: 17 },
+  chipRow: { gap: 8, paddingVertical: 9, paddingRight: 10 },
+  chip: { minHeight: 40, paddingHorizontal: 15, borderRadius: 20, borderWidth: 1, borderColor: '#355A55', alignItems: 'center', justifyContent: 'center', backgroundColor: '#0D2928' },
+  chipSelected: { backgroundColor: '#F0C073', borderColor: '#F0C073' },
+  chipText: { color: '#BFD2CD', fontWeight: '700' },
+  chipTextSelected: { color: '#173B38' },
+  librarySummaryRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  summaryText: { color: '#8CA7A1', fontSize: 13 },
+  collectionCard: { minHeight: 155, backgroundColor: '#0E2C2B', borderRadius: 23, borderWidth: 1, borderColor: '#28504B', padding: 18 },
+  collectionTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  kindBadge: { backgroundColor: '#214A43', paddingHorizontal: 11, paddingVertical: 6, borderRadius: 12 },
+  kindBadgeText: { color: '#F6CB81', fontSize: 11, fontWeight: '800', letterSpacing: 0.8 },
+  collectionCount: { color: '#91ABA5', fontSize: 12 },
+  collectionTitle: { color: '#FFF9ED', fontSize: 24, lineHeight: 30, fontWeight: '800', marginTop: 14 },
+  collectionSubject: { color: '#F0C073', fontSize: 14, fontWeight: '700', marginTop: 5 },
+  searchMatch: { color: '#A9D6C9', fontSize: 13, fontWeight: '700', marginTop: 10 },
+  collectionActionRow: { flexDirection: 'row', gap: 10 },
+  noteCoverageText: { color: '#91AAA5', fontSize: 13, lineHeight: 19, marginTop: -2 },
+  noteCard: { backgroundColor: '#0E2A29', borderRadius: 21, borderWidth: 1, borderColor: '#21433F', padding: 18 },
+  tagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginTop: 12 },
+  tag: { color: '#F3CB86', backgroundColor: '#21453F', paddingHorizontal: 9, paddingVertical: 5, borderRadius: 10, fontSize: 12 },
+  examLayout: { flex: 1, paddingHorizontal: 18 },
+  examContent: { paddingVertical: 24, paddingBottom: 40, gap: 15 },
+  examContext: { color: '#F1C575', fontSize: 12, fontWeight: '800', letterSpacing: 1.2 },
+  examQuestion: { color: '#FFF9ED', fontSize: 29, lineHeight: 36, fontWeight: '800' },
+  examInput: { minHeight: 190, borderRadius: 20, borderWidth: 1, borderColor: '#31544F', backgroundColor: '#0B2524', color: '#F5F8F5', padding: 16, fontSize: 16, lineHeight: 24 },
+  examFooter: { borderTopWidth: 1, borderTopColor: '#173735', paddingTop: 8 },
+  choiceList: { gap: 11 },
+  choice: { minHeight: 72, borderRadius: 18, borderWidth: 1, borderColor: '#31544F', backgroundColor: '#0D2928', padding: 15, justifyContent: 'center' },
+  choiceSelected: { borderColor: '#F0C073', backgroundColor: '#263C30' },
+  choiceCorrect: { borderColor: '#78C5A7', backgroundColor: '#183E33' },
+  choiceWrong: { borderColor: '#D47A72', backgroundColor: '#402725' },
+  choiceText: { color: '#EFF7F3', fontSize: 15, lineHeight: 22 },
+  correctCard: { borderColor: '#4D9C7C' },
+  reviewCard: { borderColor: '#A96A62' },
+  selfGradeTitle: { color: '#FFF9ED', fontSize: 18, fontWeight: '700', marginTop: 5 },
+  gradeRow: { flexDirection: 'row', gap: 10 },
+  examScreen: { paddingHorizontal: 18, gap: 15 },
+  scoreCard: { alignItems: 'center' },
+  scoreValue: { color: '#F2C574', fontSize: 58, fontWeight: '800', marginBottom: 8 },
+  reviewItem: { color: '#D8E7E3', fontSize: 15, lineHeight: 24, marginTop: 5 },
 });
