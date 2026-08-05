@@ -43,13 +43,13 @@ jobs:
         run: ./gradlew assembleRelease --no-daemon --max-workers=2
 
       - name: Rename APK
-        run: cp android/app/build/outputs/apk/release/app-release.apk Daypath-v0.2.0.apk
+        run: cp android/app/build/outputs/apk/release/app-release.apk Daypath-v0.3.0.apk
 
       - name: Verify APK structure
         run: |
-          test -s Daypath-v0.2.0.apk
-          file Daypath-v0.2.0.apk
-          unzip -t Daypath-v0.2.0.apk
+          test -s Daypath-v0.3.0.apk
+          file Daypath-v0.3.0.apk
+          unzip -t Daypath-v0.3.0.apk
 
       - name: Verify APK signature and package metadata
         run: |
@@ -57,20 +57,20 @@ jobs:
           AAPT="$(find "$ANDROID_SDK_ROOT/build-tools" -type f -name aapt | sort -V | tail -n 1)"
           test -x "$APKSIGNER"
           test -x "$AAPT"
-          "$APKSIGNER" verify --verbose --print-certs Daypath-v0.2.0.apk | tee apk-signature.txt
-          "$AAPT" dump badging Daypath-v0.2.0.apk | tee apk-badging.txt
-          grep -q "package: name='com.daypath.app' versionCode='2' versionName='0.2.0'" apk-badging.txt
+          "$APKSIGNER" verify --verbose --print-certs Daypath-v0.3.0.apk | tee apk-signature.txt
+          "$AAPT" dump badging Daypath-v0.3.0.apk | tee apk-badging.txt
+          grep -q "package: name='com.daypath.app' versionCode='3' versionName='0.3.0'" apk-badging.txt
 
       - name: Create checksum
-        run: sha256sum Daypath-v0.2.0.apk > Daypath-v0.2.0.apk.sha256
+        run: sha256sum Daypath-v0.3.0.apk > Daypath-v0.3.0.apk.sha256
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Daypath-v0.2.0-APK
+          name: Daypath-v0.3.0-APK
           path: |
-            Daypath-v0.2.0.apk
-            Daypath-v0.2.0.apk.sha256
+            Daypath-v0.3.0.apk
+            Daypath-v0.3.0.apk.sha256
             apk-signature.txt
             apk-badging.txt
           if-no-files-found: error
