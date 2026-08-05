@@ -2,15 +2,25 @@
   "expo": {
     "name": "Daypath",
     "slug": "daypath",
-    "version": "0.1.0",
+    "version": "0.3.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "scheme": "daypath",
     "android": {
       "package": "com.daypath.app",
-      "versionCode": 1,
+      "versionCode": 3,
       "allowBackup": true
     },
+    "plugins": [
+      [
+        "expo-audio",
+        {
+          "recordAudioAndroid": false,
+          "enableBackgroundPlayback": false,
+          "enableBackgroundRecording": false
+        }
+      ]
+    ],
     "updates": {
       "enabled": false
     }
