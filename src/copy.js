@@ -64,12 +64,16 @@ export const SCREEN_COPY = {
     title: 'Your past sessions',
     subtitle: 'Look back without judging yourself. Notice what helped and what you followed through on.',
   },
+  library: {
+    title: 'Your study library',
+    subtitle: 'Keep notes inside books, podcasts, courses, projects, or subjects. Search the library and build an exam from any collection.',
+  },
   progress: {
     title: 'Your progress',
-    subtitle: 'Progress can mean noticing sooner, doing less damage, following through more often, and returning after a difficult day.',
+    subtitle: 'See both your reflection practice and what you have collected, reviewed, and learned.',
   },
   settings: {
     title: 'Your preferences',
-    subtitle: 'Adjust the sound and experience so Daypath feels supportive rather than distracting.',
+    subtitle: 'Adjust the sound, saved data, and experience so Daypath feels supportive rather than distracting.',
   },
 };
